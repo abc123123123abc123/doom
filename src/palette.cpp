@@ -13,21 +13,29 @@ constexpr int kColormapLightLevels = 32;
 
 }  // namespace
 
-std::optional<Palette> Palette::load_from_wad(const Wad& wad) {
-    const auto pal_index = wad.find_lump("PLAYPAL");
+std::optional<Palette> Palette::load_lump(const Wad& wad, const std::string& lump_name) {
+    const auto pal_index = wad.find_lump(lump_name);
     if (!pal_index) {
-        std::fprintf(stderr, "PLAYPAL lump not found\n");
+        std::fprintf(stderr, "%s lump not found\n", lump_name.c_str());
         return std::nullopt;
     }
 
     const WadLumpData pal_data = wad.lump_data(*pal_index);
     if (pal_data.size < static_cast<std::size_t>(kPaletteBytes)) {
-        std::fprintf(stderr, "PLAYPAL too small (%zu bytes)\n", pal_data.size);
+        std::fprintf(stderr, "%s too small (%zu bytes)\n", lump_name.c_str(), pal_data.size);
         return std::nullopt;
     }
 
     Palette palette;
     std::memcpy(palette.playpal_.data(), pal_data.data, kPaletteBytes);
+    return palette;
+}
+
+std::optional<Palette> Palette::load_from_wad(const Wad& wad) {
+    auto palette = load_lump(wad, "PLAYPAL");
+    if (!palette) {
+        return std::nullopt;
+    }
 
     const auto map_index = wad.find_lump("COLORMAP");
     if (!map_index) {
@@ -41,7 +49,7 @@ std::optional<Palette> Palette::load_from_wad(const Wad& wad) {
         return std::nullopt;
     }
 
-    palette.colormap_.assign(map_data.data, map_data.data + map_data.size);
+    palette->colormap_.assign(map_data.data, map_data.data + map_data.size);
     return palette;
 }
 

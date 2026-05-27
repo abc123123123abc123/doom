@@ -76,9 +76,14 @@ int main(int argc, char* argv[]) {
         return EXIT_SUCCESS;
     }
 
-    const auto palette = Palette::load_from_wad(*wad);
-    if (!palette) {
+    const auto game_palette = Palette::load_from_wad(*wad);
+    if (!game_palette) {
         return EXIT_FAILURE;
+    }
+
+    auto display_palette = Palette::load_lump(*wad, "TITLEPAL");
+    if (!display_palette) {
+        display_palette = game_palette;
     }
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -130,7 +135,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        screen.present(renderer, *palette);
+        screen.present(renderer, *display_palette);
 
         const Uint32 elapsed = SDL_GetTicks() - frame_start;
         if (elapsed < frame_ms) {
