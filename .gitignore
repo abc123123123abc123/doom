@@ -1,1 +1,7 @@
 build/
+
+# WADs are local game data (do not commit)
+wads/*.wad
+wads/*.WAD
+wads/*.pk3
+wads/*.PK3

@@ -1,6 +1,10 @@
+#include "wad.hpp"
+
 #include <SDL.h>
 
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 
 namespace {
 
@@ -15,7 +19,19 @@ void fatal(const char* message) {
 
 }  // namespace
 
-int main(int /*argc*/, char* /*argv*/[]) {
+int main(int argc, char* argv[]) {
+    std::string wad_path = "wads/DOOM.WAD";
+    if (argc > 1) {
+        wad_path = argv[1];
+    }
+
+    const auto wad = Wad::load(wad_path);
+    if (!wad) {
+        std::fprintf(stderr, "Failed to load WAD: %s\n", wad_path.c_str());
+        return EXIT_FAILURE;
+    }
+    wad->print_directory();
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fatal("SDL_Init failed");
     }
