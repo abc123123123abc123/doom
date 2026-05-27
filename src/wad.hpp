@@ -24,6 +24,7 @@ public:
     int lump_count() const { return static_cast<int>(lumps_.size()); }
     const WadLump& lump(int index) const { return lumps_.at(index); }
     WadLumpData lump_data(int index) const;
+    std::optional<int> find_lump(const std::string& name) const;
 
     void print_directory() const;
 

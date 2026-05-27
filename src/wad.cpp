@@ -14,7 +14,7 @@ std::int32_t read_i32(const std::uint8_t* bytes) {
 
 std::string read_lump_name(const char* bytes) {
     std::string name(bytes, 8);
-    while (!name.empty() && name.back() == ' ') {
+    while (!name.empty() && (name.back() == ' ' || name.back() == '\0')) {
         name.pop_back();
     }
     return name;
@@ -77,6 +77,15 @@ std::optional<Wad> Wad::load(const std::string& path) {
     }
 
     return wad;
+}
+
+std::optional<int> Wad::find_lump(const std::string& name) const {
+    for (int i = 0; i < lump_count(); ++i) {
+        if (lumps_[static_cast<std::size_t>(i)].name == name) {
+            return i;
+        }
+    }
+    return std::nullopt;
 }
 
 WadLumpData Wad::lump_data(int index) const {
