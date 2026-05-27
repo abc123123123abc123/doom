@@ -65,6 +65,30 @@ void Screen::fill_rect(int x, int y, int w, int h, std::uint8_t color) {
     }
 }
 
+void Screen::draw_line(int x0, int y0, int x1, int y1, std::uint8_t color) {
+    int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    while (true) {
+        put_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        const int err2 = 2 * err;
+        if (err2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (err2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
 void Screen::draw_palette_test(const Palette& palette) {
     clear(palette.map_index(0));
 

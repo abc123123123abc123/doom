@@ -1,3 +1,4 @@
+#include "map.hpp"
 #include "palette.hpp"
 #include "patch.hpp"
 #include "screen.hpp"
@@ -17,6 +18,12 @@ namespace {
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 600;
 constexpr int kTargetFps = 60;
+
+enum class View {
+    Title,
+    Map,
+    Sprite,
+};
 
 std::atomic<bool> g_quit{false};
 
@@ -57,6 +64,36 @@ void fatal(const char* message) {
     std::exit(EXIT_FAILURE);
 }
 
+void redraw_view(View view, Screen& screen, const Wad& wad, const Map& map) {
+    screen.clear(0);
+
+    switch (view) {
+        case View::Title: {
+            const auto lump = wad.find_lump("TITLEPIC");
+            if (!lump || !draw_patch(screen, wad.lump_data(*lump), 0, 0)) {
+                std::fprintf(stderr, "Failed to draw TITLEPIC\n");
+            }
+            break;
+        }
+        case View::Map:
+            map.draw(screen, 176, 112, 215);
+            break;
+        case View::Sprite: {
+            const auto lump = wad.find_lump("TROOA1");
+            if (!lump || !draw_patch(screen, wad.lump_data(*lump), Screen::kWidth / 2,
+                                     Screen::kHeight / 2)) {
+                std::fprintf(stderr, "Failed to draw TROOA1\n");
+            }
+            break;
+        }
+    }
+}
+
+const Palette& palette_for_view(View view, const Palette& title_palette,
+                                const Palette& game_palette) {
+    return view == View::Title ? title_palette : game_palette;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -81,10 +118,22 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    auto display_palette = Palette::load_lump(*wad, "TITLEPAL");
-    if (!display_palette) {
-        display_palette = game_palette;
+    auto title_palette = Palette::load_lump(*wad, "TITLEPAL");
+    if (!title_palette) {
+        title_palette = game_palette;
     }
+
+    Map map;
+    if (!Map::load_from_wad(*wad, map)) {
+        return EXIT_FAILURE;
+    }
+
+    if (!wad->find_lump("TITLEPIC") || !wad->find_lump("TROOA1")) {
+        std::fprintf(stderr, "TITLEPIC or TROOA1 lump not found\n");
+        return EXIT_FAILURE;
+    }
+
+    std::printf("Keys: 1=title  2=map  3=sprite  Esc=quit\n");
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fatal("SDL_Init failed");
@@ -108,17 +157,8 @@ int main(int argc, char* argv[]) {
         fatal("Screen::init failed");
     }
 
-    screen.clear(0);
-
-    const auto title_lump = wad->find_lump("TITLEPIC");
-    if (!title_lump) {
-        std::fprintf(stderr, "TITLEPIC lump not found\n");
-        return EXIT_FAILURE;
-    }
-    if (!draw_patch(screen, wad->lump_data(*title_lump), 0, 0)) {
-        std::fprintf(stderr, "Failed to draw TITLEPIC\n");
-        return EXIT_FAILURE;
-    }
+    View view = View::Title;
+    redraw_view(view, screen, *wad, map);
 
     bool running = true;
     const Uint32 frame_ms = 1000u / static_cast<Uint32>(kTargetFps);
@@ -130,12 +170,26 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             }
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
-                running = false;
+            if (event.type == SDL_KEYDOWN) {
+                if (event.key.keysym.sym == SDLK_ESCAPE) {
+                    running = false;
+                }
+                if (event.key.keysym.sym == SDLK_1) {
+                    view = View::Title;
+                    redraw_view(view, screen, *wad, map);
+                }
+                if (event.key.keysym.sym == SDLK_2) {
+                    view = View::Map;
+                    redraw_view(view, screen, *wad, map);
+                }
+                if (event.key.keysym.sym == SDLK_3) {
+                    view = View::Sprite;
+                    redraw_view(view, screen, *wad, map);
+                }
             }
         }
 
-        screen.present(renderer, *display_palette);
+        screen.present(renderer, palette_for_view(view, *title_palette, *game_palette));
 
         const Uint32 elapsed = SDL_GetTicks() - frame_start;
         if (elapsed < frame_ms) {
