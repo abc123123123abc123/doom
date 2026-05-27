@@ -1,6 +1,6 @@
+#include "game.hpp"
 #include "map.hpp"
 #include "palette.hpp"
-#include "patch.hpp"
 #include "screen.hpp"
 #include "wad.hpp"
 
@@ -17,13 +17,6 @@ namespace {
 
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 600;
-constexpr int kTargetFps = 60;
-
-enum class View {
-    Title,
-    Map,
-    Sprite,
-};
 
 std::atomic<bool> g_quit{false};
 
@@ -64,34 +57,65 @@ void fatal(const char* message) {
     std::exit(EXIT_FAILURE);
 }
 
-void redraw_view(View view, Screen& screen, const Wad& wad, const Map& map) {
-    screen.clear(0);
-
-    switch (view) {
-        case View::Title: {
-            const auto lump = wad.find_lump("TITLEPIC");
-            if (!lump || !draw_patch(screen, wad.lump_data(*lump), 0, 0)) {
-                std::fprintf(stderr, "Failed to draw TITLEPIC\n");
-            }
-            break;
-        }
-        case View::Map:
-            map.draw(screen, 176, 112, 215);
-            break;
-        case View::Sprite: {
-            const auto lump = wad.find_lump("TROOA1");
-            if (!lump || !draw_patch(screen, wad.lump_data(*lump), Screen::kWidth / 2,
-                                     Screen::kHeight / 2)) {
-                std::fprintf(stderr, "Failed to draw TROOA1\n");
-            }
-            break;
-        }
+void update_window_title(SDL_Window* window, const Game& game) {
+    char title[96];
+    if (game.view == View::Map || game.view == View::World) {
+        std::snprintf(title, sizeof(title), "doom - tic %d  pos (%d,%d)", game.gametic,
+                      game.player_x(), game.player_y());
+    } else {
+        std::snprintf(title, sizeof(title), "doom - tic %d", game.gametic);
     }
+    SDL_SetWindowTitle(window, title);
+}
+
+GameInput read_input(const Uint8* keys, View view, bool& use_was_down) {
+    GameInput input;
+
+    if (view == View::World) {
+        input.move_north = keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP];
+        input.move_south = keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN];
+        input.move_west = keys[SDL_SCANCODE_A];
+        input.move_east = keys[SDL_SCANCODE_D];
+        input.turn_left = keys[SDL_SCANCODE_LEFT];
+        input.turn_right = keys[SDL_SCANCODE_RIGHT];
+    } else {
+        input.move_north = keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP];
+        input.move_south = keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN];
+        input.move_east = keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT];
+        input.move_west = keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT];
+    }
+
+    const bool use_down = keys[SDL_SCANCODE_E];
+    input.use = use_down && !use_was_down;
+    use_was_down = use_down;
+    return input;
 }
 
 const Palette& palette_for_view(View view, const Palette& title_palette,
                                 const Palette& game_palette) {
     return view == View::Title ? title_palette : game_palette;
+}
+
+bool handle_keydown(SDL_Keycode key, Game& game) {
+    switch (key) {
+        case SDLK_ESCAPE:
+            game.quit_requested = true;
+            return true;
+        case SDLK_1:
+            game.set_view(View::Title);
+            return true;
+        case SDLK_2:
+            game.set_view(View::Map);
+            return true;
+        case SDLK_3:
+            game.set_view(View::Sprite);
+            return true;
+        case SDLK_4:
+            game.set_view(View::World);
+            return true;
+        default:
+            return false;
+    }
 }
 
 }  // namespace
@@ -133,7 +157,9 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::printf("Keys: 1=title  2=map  3=sprite  Esc=quit\n");
+    std::printf("Keys: 1=title  2=map  3=sprite  4=world3d  Esc=quit\n");
+    std::printf("Map: WASD  |  World: WASD move, arrows turn, E=use  |  %d tics/sec\n",
+                Game::kTicRate);
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fatal("SDL_Init failed");
@@ -157,44 +183,45 @@ int main(int argc, char* argv[]) {
         fatal("Screen::init failed");
     }
 
-    View view = View::Title;
-    redraw_view(view, screen, *wad, map);
+    Game game;
+    game.init_from_map(map);
+    game.draw(screen, *wad, map);
+    update_window_title(window, game);
 
-    bool running = true;
-    const Uint32 frame_ms = 1000u / static_cast<Uint32>(kTargetFps);
-    while (running && !g_quit) {
-        const Uint32 frame_start = SDL_GetTicks();
+    double tic_accumulator = 0.0;
+    Uint32 last_ticks = SDL_GetTicks();
+    bool use_was_down = false;
+
+    while (!game.quit_requested && !g_quit) {
+        const Uint32 now = SDL_GetTicks();
+        tic_accumulator += static_cast<double>(now - last_ticks) / 1000.0;
+        last_ticks = now;
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
-                running = false;
+                game.quit_requested = true;
             }
             if (event.type == SDL_KEYDOWN) {
-                if (event.key.keysym.sym == SDLK_ESCAPE) {
-                    running = false;
-                }
-                if (event.key.keysym.sym == SDLK_1) {
-                    view = View::Title;
-                    redraw_view(view, screen, *wad, map);
-                }
-                if (event.key.keysym.sym == SDLK_2) {
-                    view = View::Map;
-                    redraw_view(view, screen, *wad, map);
-                }
-                if (event.key.keysym.sym == SDLK_3) {
-                    view = View::Sprite;
-                    redraw_view(view, screen, *wad, map);
-                }
+                handle_keydown(event.key.keysym.sym, game);
             }
         }
 
-        screen.present(renderer, palette_for_view(view, *title_palette, *game_palette));
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        const GameInput input = read_input(keys, game.view, use_was_down);
 
-        const Uint32 elapsed = SDL_GetTicks() - frame_start;
-        if (elapsed < frame_ms) {
-            SDL_Delay(frame_ms - elapsed);
+        while (tic_accumulator >= Game::kSecondsPerTic) {
+            game.run_tic(input, map);
+            tic_accumulator -= Game::kSecondsPerTic;
+            update_window_title(window, game);
         }
+
+        if (game.needs_redraw) {
+            game.draw(screen, *wad, map);
+            game.needs_redraw = false;
+        }
+
+        screen.present(renderer, palette_for_view(game.view, *title_palette, *game_palette));
     }
 
     screen.shutdown();

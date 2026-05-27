@@ -19,6 +19,9 @@ public:
     void clear(std::uint8_t color);
     void put_pixel(int x, int y, std::uint8_t color);
     void fill_rect(int x, int y, int w, int h, std::uint8_t color);
+    void draw_column(int x, int y0, int y1, std::uint8_t color);
+    void draw_column_scaled(int x, int y0, int y1, const std::uint8_t* source, int source_height,
+                            std::uint8_t color);
     void draw_palette_test(const Palette& palette);
     void draw_line(int x0, int y0, int x1, int y1, std::uint8_t color);
 

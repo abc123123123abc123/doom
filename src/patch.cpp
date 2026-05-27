@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -180,4 +181,92 @@ bool draw_patch(Screen& screen, const WadLumpData& lump, int x, int y) {
     }
 
     return false;
+}
+
+bool patch_info(const WadLumpData& lump, PatchInfo& info) {
+    if (lump.size < 8) {
+        return false;
+    }
+
+    const std::uint8_t* data = lump.data;
+    const std::int16_t width16 = read_i16(data);
+    const std::int16_t height16 = read_i16(data + 2);
+
+    if (width16 > 0 && width16 < 512 && height16 > 0 && height16 < 512 &&
+        read_i32(data + 8) >= 8) {
+        info.width = width16;
+        info.height = height16;
+        info.leftoffset = read_i16(data + 4);
+        info.topoffset = read_i16(data + 6);
+        info.compact = false;
+        return true;
+    }
+
+    const int compact_width = compact_sprite_width(data, lump.size);
+    const int compact_height = data[1];
+    if (compact_width > 0 && compact_height > 0) {
+        info.width = compact_width;
+        info.height = compact_height;
+        info.leftoffset = static_cast<int>(read_u16(data + 4));
+        info.topoffset = static_cast<int>(read_u16(data + 6));
+        info.compact = true;
+        return true;
+    }
+
+    return false;
+}
+
+bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::uint8_t>& pixels) {
+    PatchInfo info;
+    if (!patch_info(lump, info) || column < 0 || column >= info.width) {
+        return false;
+    }
+
+    pixels.assign(static_cast<std::size_t>(info.height), 0);
+    const std::uint8_t* data = lump.data;
+
+    std::size_t column_ofs = 0;
+    if (info.compact) {
+        column_ofs = read_u16(data + 8 + column * 2);
+    } else {
+        column_ofs = static_cast<std::size_t>(read_i32(data + 8 + column * 4));
+    }
+
+    if (column_ofs < 8 || column_ofs >= lump.size) {
+        return false;
+    }
+
+    const std::uint8_t* source = data + column_ofs;
+    while (true) {
+        if (static_cast<std::size_t>(source - data) >= lump.size) {
+            return false;
+        }
+
+        const std::uint8_t top_delta = *source++;
+        if (top_delta == 255) {
+            break;
+        }
+
+        if (static_cast<std::size_t>(source - data) >= lump.size) {
+            return false;
+        }
+
+        const std::uint8_t length = *source++;
+        for (int row = 0; row < length; ++row) {
+            if (static_cast<std::size_t>(source - data) >= lump.size) {
+                return false;
+            }
+
+            const int y = top_delta + row;
+            if (y >= 0 && y < info.height) {
+                const std::uint8_t pixel = *source;
+                if (pixel != 0) {
+                    pixels[static_cast<std::size_t>(y)] = pixel;
+                }
+            }
+            ++source;
+        }
+    }
+
+    return true;
 }

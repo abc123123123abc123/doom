@@ -54,6 +54,37 @@ void Screen::put_pixel(int x, int y, std::uint8_t color) {
     indices_[static_cast<std::size_t>(y * kWidth + x)] = color;
 }
 
+void Screen::draw_column(int x, int y0, int y1, std::uint8_t color) {
+    const int top = std::max(0, y0);
+    const int bottom = std::min(kHeight, y1);
+    for (int y = top; y < bottom; ++y) {
+        indices_[static_cast<std::size_t>(y * kWidth + x)] = color;
+    }
+}
+
+void Screen::draw_column_scaled(int x, int y0, int y1, const std::uint8_t* source,
+                                int source_height, std::uint8_t color) {
+    if (source == nullptr || source_height <= 0) {
+        draw_column(x, y0, y1, color);
+        return;
+    }
+
+    const int top = std::max(0, y0);
+    const int bottom = std::min(kHeight, y1);
+    const int span = bottom - top;
+    if (span <= 0) {
+        return;
+    }
+
+    for (int row = 0; row < span; ++row) {
+        const int source_y = (row * source_height) / span;
+        const std::uint8_t pixel = source[source_y];
+        if (pixel != 0) {
+            indices_[static_cast<std::size_t>((top + row) * kWidth + x)] = pixel;
+        }
+    }
+}
+
 void Screen::fill_rect(int x, int y, int w, int h, std::uint8_t color) {
     const int x0 = std::max(0, x);
     const int y0 = std::max(0, y);
