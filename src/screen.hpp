@@ -17,6 +17,7 @@ public:
     void shutdown();
 
     void clear(std::uint8_t color);
+    void put_pixel(int x, int y, std::uint8_t color);
     void fill_rect(int x, int y, int w, int h, std::uint8_t color);
     void draw_palette_test(const Palette& palette);
 

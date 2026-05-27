@@ -1,4 +1,5 @@
 #include "palette.hpp"
+#include "patch.hpp"
 #include "screen.hpp"
 #include "wad.hpp"
 
@@ -102,7 +103,17 @@ int main(int argc, char* argv[]) {
         fatal("Screen::init failed");
     }
 
-    screen.draw_palette_test(*palette);
+    screen.clear(0);
+
+    const auto title_lump = wad->find_lump("TITLEPIC");
+    if (!title_lump) {
+        std::fprintf(stderr, "TITLEPIC lump not found\n");
+        return EXIT_FAILURE;
+    }
+    if (!draw_patch(screen, wad->lump_data(*title_lump), 0, 0)) {
+        std::fprintf(stderr, "Failed to draw TITLEPIC\n");
+        return EXIT_FAILURE;
+    }
 
     bool running = true;
     const Uint32 frame_ms = 1000u / static_cast<Uint32>(kTargetFps);

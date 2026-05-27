@@ -47,6 +47,13 @@ void Screen::clear(std::uint8_t color) {
     indices_.fill(color);
 }
 
+void Screen::put_pixel(int x, int y, std::uint8_t color) {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) {
+        return;
+    }
+    indices_[static_cast<std::size_t>(y * kWidth + x)] = color;
+}
+
 void Screen::fill_rect(int x, int y, int w, int h, std::uint8_t color) {
     const int x0 = std::max(0, x);
     const int y0 = std::max(0, y);
