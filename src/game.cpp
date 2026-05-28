@@ -2,9 +2,9 @@
 
 #include "patch.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
-
 namespace {
 
 const char* kTrooFrames[] = {
@@ -12,6 +12,15 @@ const char* kTrooFrames[] = {
     "TROOA5", "TROOA6", "TROOA7", "TROOA8",
 };
 constexpr int kTrooFrameCount = static_cast<int>(sizeof(kTrooFrames) / sizeof(kTrooFrames[0]));
+
+void draw_hud_overlay(const Wad& wad, Screen& screen) {
+    const auto playscrn = wad.find_lump("PLAYSCRN");
+    if (playscrn) {
+        draw_interface_raw_transparent(screen, wad.lump_data(*playscrn), 0, 0, 255);
+    } else {
+        screen.fill_rect(0, Screen::kHeight - 32, Screen::kWidth, 32, 39);
+    }
+}
 
 }  // namespace
 
@@ -25,7 +34,7 @@ void Game::init_from_map(const Map& map) {
     lines_.clear();
     lines_.reserve(map.lines().size());
     for (const MapLine& line : map.lines()) {
-        lines_.push_back({line, false});
+        lines_.push_back({line, true});
     }
 
     player_x_ = 128;
@@ -44,6 +53,41 @@ void Game::set_view(View view) {
         return;
     }
     this->view = view;
+    needs_redraw = true;
+}
+
+void Game::cycle_debug_value(SDL_Keycode key) {
+    if (view != View::World) {
+        return;
+    }
+    switch (key) {
+        case SDLK_3:
+            wall_cycle_ = (wall_cycle_ + 1) % 10;
+            break;
+        case SDLK_4:
+            wall_cycle_ = (wall_cycle_ + 9) % 10;
+            break;
+        case SDLK_5:
+            ceiling_cycle_ = (ceiling_cycle_ + 1) % 10;
+            break;
+        case SDLK_6:
+            ceiling_cycle_ = (ceiling_cycle_ + 9) % 10;
+            break;
+        case SDLK_7:
+            floor_cycle_ = (floor_cycle_ + 1) % 10;
+            break;
+        case SDLK_8:
+            floor_cycle_ = (floor_cycle_ + 9) % 10;
+            break;
+        case SDLK_9:
+            light_cycle_ = std::min(9, light_cycle_ + 1);
+            break;
+        case SDLK_0:
+            light_cycle_ = std::max(0, light_cycle_ - 1);
+            break;
+        default:
+            return;
+    }
     needs_redraw = true;
 }
 
@@ -230,10 +274,7 @@ void Game::run_world_tic(const GameInput& input, const Map& map) {
         }
     }
 
-    if (input.use) {
-        try_use_nearby_thing(map);
-        changed = true;
-    }
+    (void)input.use;
 
     if (changed) {
         needs_redraw = true;
@@ -283,7 +324,9 @@ void Game::draw(Screen& screen, const Wad& wad, const Map& map, const Palette& p
         case View::World:
             render3d_.render(screen, wad, map, lines_, things_, palette,
                              static_cast<float>(player_x_), static_cast<float>(player_y_),
-                             player_angle_);
+                             player_angle_, wall_cycle_, ceiling_cycle_, floor_cycle_,
+                             light_cycle_, gametic);
+            draw_hud_overlay(wad, screen);
             break;
     }
 }

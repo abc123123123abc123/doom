@@ -103,7 +103,8 @@ PatchColumns* ensure_patch_columns(const Wad& wad,
 
     WadLumpData stored_lump{entry.lump.data(), entry.lump.size()};
     for (int col = 0; col < info.width; ++col) {
-        if (!patch_column_pixels(stored_lump, col, entry.columns[static_cast<std::size_t>(col)])) {
+        if (!patch_column_pixels_opaque(stored_lump, col,
+                                        entry.columns[static_cast<std::size_t>(col)])) {
             if (std::strcmp(lump_name, kFallbackWallTexture) != 0) {
                 return ensure_patch_columns(wad, cache, kFallbackWallTexture);
             }
@@ -115,16 +116,20 @@ PatchColumns* ensure_patch_columns(const Wad& wad,
     return &inserted.first->second;
 }
 
-const char* sprite_lump_for_thing(std::int16_t type) {
+const char* sprite_lump_for_thing(std::int16_t type, int gametic) {
+    static const char* kImpFrames[] = {"TROOA1", "TROOB1", "TROOC1", "TROOD1"};
+    static const char* kDemonFrames[] = {"SARGA1", "SARGB1", "SARGC1", "SARGD1"};
+    static const char* kBaronFrames[] = {"BOSSA1", "BOSSB1", "BOSSC1", "BOSSD1"};
+    const int frame = (gametic / 6) % 4;
     switch (type) {
         case 0:
-            return "WNUMBER0";
+            return kImpFrames[frame];
         case 1:
-            return "WNUMBER1";
+            return kDemonFrames[frame];
         case 3:
-            return "WNUMBER3";
+            return kBaronFrames[frame];
         default:
-            return "TROOA1";
+            return kImpFrames[frame];
     }
 }
 
@@ -298,7 +303,8 @@ const char* Render3D::texture_name_for_line(const MapLine& line) const {
 void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
                       const std::vector<MapLineState>& lines,
                       const std::vector<MapThingState>& things, const Palette& palette,
-                      float player_x, float player_y, float player_angle) const {
+                      float player_x, float player_y, float player_angle, int wall_cycle,
+                      int ceiling_cycle, int floor_cycle, int light_cycle, int gametic) const {
     static std::unordered_map<std::string, PatchColumns> patch_cache;
     static std::array<std::uint8_t, kFlatSize> floor_flat{};
     static std::array<std::uint8_t, kFlatSize> ceiling_flat{};
@@ -312,6 +318,17 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
             ceiling_flat.fill(kSkyColor);
         }
         flats_loaded = true;
+    }
+
+    std::array<std::uint8_t, kFlatSize> active_floor = floor_flat;
+    std::array<std::uint8_t, kFlatSize> active_ceiling = ceiling_flat;
+    {
+        const int f = ((floor_cycle % 8) + 8) % 8 + 1;
+        const int c = ((ceiling_cycle % 8) + 8) % 8 + 1;
+        const std::string floor_name = "FLAT" + std::to_string(f);
+        const std::string ceil_name = "FLAT" + std::to_string(c);
+        load_flat(wad, floor_name.c_str(), active_floor);
+        load_flat(wad, ceil_name.c_str(), active_ceiling);
     }
 
     screen.clear(palette.map_index(kFloorVoidColor, 0));
@@ -350,8 +367,9 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
             projected_perp_distance = std::max(kMinProjectedPerpDistance, perp_distance);
             const int wall_screen_height = static_cast<int>(
                 (kWorldWallHeight * kFocalLength) / projected_perp_distance);
-            wall_top = kHorizon - wall_screen_height / 2;
-            wall_bottom = kHorizon + wall_screen_height / 2;
+            const int horizon = kHorizon + (ceiling_cycle - 4) * 3;
+            wall_top = horizon - wall_screen_height / 2;
+            wall_bottom = horizon + wall_screen_height / 2;
         }
 
         const int clipped_wall_top = std::clamp(wall_top, 0, Screen::kHeight);
@@ -375,8 +393,9 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
             const float world_y =
                 player_y + dir_y_base * perp_row_dist +
                 right_y * perp_row_dist * camera_x * kCameraPlaneScale;
-            const std::uint8_t color = sample_flat(ceiling_flat, world_x, world_y);
-            put_shaded(screen, x, y, color, shade_for_distance(perp_row_dist), palette);
+            const std::uint8_t color = sample_flat(active_ceiling, world_x, world_y);
+            const int light = std::clamp(shade_for_distance(perp_row_dist) + (light_cycle - 5), 0, 31);
+            put_shaded(screen, x, y, color, light, palette);
         }
 
         for (int y = clipped_wall_bottom; y < Screen::kHeight; ++y) {
@@ -395,19 +414,35 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
             const float world_y =
                 player_y + dir_y_base * perp_row_dist +
                 right_y * perp_row_dist * camera_x * kCameraPlaneScale;
-            const std::uint8_t color = sample_flat(floor_flat, world_x, world_y);
-            put_shaded(screen, x, y, color, shade_for_distance(perp_row_dist), palette);
+            const std::uint8_t color = sample_flat(active_floor, world_x, world_y);
+            const int light = std::clamp(shade_for_distance(perp_row_dist) + (light_cycle - 5), 0, 31);
+            put_shaded(screen, x, y, color, light, palette);
         }
 
         if (!has_wall) {
             continue;
         }
 
-        const char* texture_name =
-            hit.is_boundary ? kBoundaryWallTexture : texture_name_for_line(
-                                  lines[static_cast<std::size_t>(hit.line_index)].line);
+        const char* texture_name = kBoundaryWallTexture;
+        if (!hit.is_boundary) {
+            const MapLine& hit_line = lines[static_cast<std::size_t>(hit.line_index)].line;
+            const std::string& map_texture = map.patch_name_for_index(hit_line.texture_index);
+            if (map_texture.empty()) {
+                texture_name = texture_name_for_line(hit_line);
+            } else {
+                texture_name = map_texture.c_str();
+            }
+            if (!map_texture.empty()) {
+                const int idx = (hit_line.texture_index + wall_cycle) %
+                                std::max(1, static_cast<int>(map.patch_names().size()));
+                const std::string& cycled = map.patch_name_for_index(idx);
+                if (!cycled.empty()) {
+                    texture_name = cycled.c_str();
+                }
+            }
+        }
         PatchColumns* patch = ensure_patch_columns(wad, patch_cache, texture_name);
-        const int light = shade_for_distance(perp_distance);
+        const int light = std::clamp(shade_for_distance(perp_distance) + (light_cycle - 5), 0, 31);
 
         if (patch == nullptr) {
             screen.draw_column(x, wall_top, wall_bottom, palette.map_index(176, light));
@@ -416,7 +451,13 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
 
         int tex_column = 0;
         if (patch->info.width > 1) {
-            const float u = std::clamp(hit.wall_u, 0.0f, 0.9999f);
+            float u = std::clamp(hit.wall_u, 0.0f, 0.9999f);
+            if (!hit.is_boundary) {
+                const MapLine& hit_line = lines[static_cast<std::size_t>(hit.line_index)].line;
+                u += static_cast<float>(hit_line.texture_u_offset) / 32.0f;
+                u += map.texture_u_bias_for_line(hit_line);
+                u -= std::floor(u);
+            }
             tex_column = static_cast<int>(u * static_cast<float>(patch->info.width));
             tex_column = std::clamp(tex_column, 0, patch->info.width - 1);
         }
@@ -450,7 +491,7 @@ void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
         SpriteDraw draw;
         draw.depth = transform_y;
         draw.screen_x = sprite_screen_x;
-        draw.lump_name = sprite_lump_for_thing(state.thing.type);
+        draw.lump_name = sprite_lump_for_thing(state.thing.type, gametic);
         sprites.push_back(draw);
     }
 

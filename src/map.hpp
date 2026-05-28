@@ -3,6 +3,7 @@
 #include "screen.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 struct MapPoint {
@@ -15,6 +16,7 @@ struct MapLine {
     std::int16_t v2 = 0;
     std::int16_t special = 0;
     int texture_index = 0;
+    int texture_u_offset = 0;
 
     bool is_door() const { return special == 376 || special == 448; }
 };
@@ -49,6 +51,11 @@ struct MapThingState {
     bool activated = false;
 };
 
+struct MapTextureSlot {
+    int x_offset = 0;
+    int patch_index = 0;
+};
+
 class Wad;
 
 class Map {
@@ -74,9 +81,17 @@ public:
     const std::vector<MapPoint>& points() const { return points_; }
     const std::vector<MapThing>& things() const { return things_; }
     const std::vector<MapLine>& lines() const { return lines_; }
+    const std::vector<std::string>& patch_names() const { return patch_names_; }
+    const std::string& patch_name_for_index(int index) const;
+    int wall_texture_slot_count() const { return wall_texture_slot_count_; }
+    float texture_u_bias_for_line(const MapLine& line) const;
 
 private:
     std::vector<MapPoint> points_;
     std::vector<MapLine> lines_;
     std::vector<MapThing> things_;
+    std::vector<std::string> patch_names_;
+    std::vector<MapTextureSlot> texture_slots_;
+    int texture_width_ = 0;
+    int wall_texture_slot_count_ = 0;
 };

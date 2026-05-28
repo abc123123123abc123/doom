@@ -142,6 +142,33 @@ bool draw_raw_screen(Screen& screen, const std::uint8_t* data, std::size_t lump_
     return true;
 }
 
+bool draw_raw_screen_transparent(Screen& screen, const std::uint8_t* data, std::size_t lump_size,
+                                 int width, int height, int leftoffset, int topoffset, int x,
+                                 int y, std::uint8_t transparent_index) {
+    const std::size_t raw_bytes =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    if (lump_size != 8u + raw_bytes) {
+        return false;
+    }
+
+    const int dest_x = x - leftoffset;
+    const int dest_y = y - topoffset;
+    const std::uint8_t* pixels = data + 8;
+
+    for (int row = 0; row < height; ++row) {
+        for (int col = 0; col < width; ++col) {
+            const std::uint8_t pixel =
+                pixels[static_cast<std::size_t>(row) * static_cast<std::size_t>(width) +
+                       static_cast<std::size_t>(col)];
+            if (pixel == transparent_index) {
+                continue;
+            }
+            screen.put_pixel(dest_x + col, dest_y + row, pixel);
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool draw_patch(Screen& screen, const WadLumpData& lump, int x, int y) {
@@ -183,6 +210,67 @@ bool draw_patch(Screen& screen, const WadLumpData& lump, int x, int y) {
     return false;
 }
 
+bool draw_interface_raw_transparent(Screen& screen, const WadLumpData& lump, int x, int y,
+                                    std::uint8_t transparent_index) {
+    if (lump.size < 8) {
+        return false;
+    }
+
+    const std::uint8_t* data = lump.data;
+    const std::int16_t width16 = read_i16(data);
+    const std::int16_t height16 = read_i16(data + 2);
+    const std::int16_t leftoffset16 = read_i16(data + 4);
+    const std::int16_t topoffset16 = read_i16(data + 6);
+    if (width16 <= 0 || width16 >= 512 || height16 <= 0 || height16 >= 512) {
+        return false;
+    }
+
+    return draw_raw_screen_transparent(screen, data, lump.size, width16, height16, leftoffset16,
+                                       topoffset16, x, y, transparent_index);
+}
+
+bool draw_interface_raw_transparent_scaled(Screen& screen, const WadLumpData& lump, int x, int y,
+                                           int dst_w, int dst_h,
+                                           std::uint8_t transparent_index) {
+    if (lump.size < 8 || dst_w <= 0 || dst_h <= 0) {
+        return false;
+    }
+
+    const std::uint8_t* data = lump.data;
+    const int width = read_i16(data);
+    const int height = read_i16(data + 2);
+    const int leftoffset = read_i16(data + 4);
+    const int topoffset = read_i16(data + 6);
+    if (width <= 0 || width >= 512 || height <= 0 || height >= 512) {
+        return false;
+    }
+
+    const std::size_t raw_bytes =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    if (lump.size != 8u + raw_bytes) {
+        return false;
+    }
+
+    const std::uint8_t* pixels = data + 8;
+    const int dest_x = x - leftoffset;
+    const int dest_y = y - topoffset;
+    for (int dy = 0; dy < dst_h; ++dy) {
+        const int sy = (dy * height) / dst_h;
+        for (int dx = 0; dx < dst_w; ++dx) {
+            const int sx = (dx * width) / dst_w;
+            const std::uint8_t pixel =
+                pixels[static_cast<std::size_t>(sy) * static_cast<std::size_t>(width) +
+                       static_cast<std::size_t>(sx)];
+            if (pixel == transparent_index) {
+                continue;
+            }
+            screen.put_pixel(dest_x + dx, dest_y + dy, pixel);
+        }
+    }
+
+    return true;
+}
+
 bool patch_info(const WadLumpData& lump, PatchInfo& info) {
     if (lump.size < 8) {
         return false;
@@ -220,7 +308,8 @@ bool patch_info(const WadLumpData& lump, PatchInfo& info) {
     return false;
 }
 
-bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::uint8_t>& pixels) {
+bool patch_column_pixels_internal(const WadLumpData& lump, int column, std::vector<std::uint8_t>& pixels,
+                                  bool treat_zero_transparent) {
     PatchInfo info;
     if (!patch_info(lump, info) || column < 0 || column >= info.width) {
         return false;
@@ -264,7 +353,7 @@ bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::u
             const int y = top_delta + row;
             if (y >= 0 && y < info.height) {
                 const std::uint8_t pixel = *source;
-                if (pixel != 0) {
+                if (!treat_zero_transparent || pixel != 0) {
                     pixels[static_cast<std::size_t>(y)] = pixel;
                 }
             }
@@ -280,4 +369,13 @@ bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::u
     }
 
     return true;
+}
+
+bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::uint8_t>& pixels) {
+    return patch_column_pixels_internal(lump, column, pixels, true);
+}
+
+bool patch_column_pixels_opaque(const WadLumpData& lump, int column,
+                                std::vector<std::uint8_t>& pixels) {
+    return patch_column_pixels_internal(lump, column, pixels, false);
 }

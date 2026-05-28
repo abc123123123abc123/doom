@@ -10,7 +10,8 @@ public:
     void render(Screen& screen, const Wad& wad, const Map& map,
                 const std::vector<MapLineState>& lines,
                 const std::vector<MapThingState>& things, const Palette& palette,
-                float player_x, float player_y, float player_angle) const;
+                float player_x, float player_y, float player_angle, int wall_cycle,
+                int ceiling_cycle, int floor_cycle, int light_cycle, int gametic) const;
 
 private:
     struct Hit {

@@ -97,6 +97,13 @@ const Palette& palette_for_view(View view, const Palette& title_palette,
 }
 
 bool handle_keydown(SDL_Keycode key, Game& game) {
+    if (game.view == View::World &&
+        (key == SDLK_3 || key == SDLK_4 || key == SDLK_5 || key == SDLK_6 || key == SDLK_7 ||
+         key == SDLK_8 || key == SDLK_9 || key == SDLK_0)) {
+        game.cycle_debug_value(key);
+        return true;
+    }
+
     switch (key) {
         case SDLK_ESCAPE:
             game.quit_requested = true;
@@ -157,9 +164,10 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    std::printf("Doom v0.2 tech preview mode\n");
     std::printf("Keys: 1=title  2=map  3=sprite  4=world3d  Esc=quit\n");
-    std::printf("Map: WASD  |  World: WASD move, arrows turn, E=use  |  %d tics/sec\n",
-                Game::kTicRate);
+    std::printf("World debug: 3/4 wall tex  5/6 ceiling tex  7/8 floor tex  9/0 light\n");
+    std::printf("Map: WASD  |  World: WASD move, arrows turn  |  %d tics/sec\n", Game::kTicRate);
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fatal("SDL_Init failed");

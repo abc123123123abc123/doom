@@ -38,6 +38,7 @@ public:
 
     void init_from_map(const Map& map);
     void set_view(View view);
+    void cycle_debug_value(SDL_Keycode key);
     void run_tic(const GameInput& input, const Map& map);
     void draw(Screen& screen, const Wad& wad, const Map& map, const Palette& palette) const;
 
@@ -53,6 +54,10 @@ private:
     void open_all_doors();
 
     Render3D render3d_;
+    int wall_cycle_ = 0;
+    int ceiling_cycle_ = 0;
+    int floor_cycle_ = 0;
+    int light_cycle_ = 5;
     int sprite_frame_ = 0;
     std::int16_t player_x_ = 0;
     std::int16_t player_y_ = 0;

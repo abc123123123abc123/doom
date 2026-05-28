@@ -66,22 +66,21 @@ bool load_points(const WadLumpData& lump, std::vector<MapPoint>& points) {
 }
 
 int texture_index_for_special(std::int16_t special, int line_index) {
-    if (special == 376 || special == 448) {
+    (void)line_index;
+    const int value = std::abs(static_cast<int>(special));
+    // v0.2 door specials should use the dedicated door texture.
+    if (value == 376 || value == 448) {
         return 33;
     }
-    if (special == 64) {
-        return 27;
-    }
-    if (special == 256) {
-        return 0;
-    }
-    if (special == 8) {
-        return 14;
-    }
-    return (std::abs(static_cast<int>(special)) / 16 + line_index) % 34;
+    return value >> 5;
 }
 
-bool load_lines(const WadLumpData& lump, std::vector<MapLine>& lines) {
+int texture_u_offset_for_special(std::int16_t special) {
+    const int value = std::abs(static_cast<int>(special));
+    return value & 31;
+}
+
+bool load_lines(const WadLumpData& lump, std::vector<MapLine>& lines, int texture_slot_count) {
     if (lump.size < 4) {
         return false;
     }
@@ -99,6 +98,8 @@ bool load_lines(const WadLumpData& lump, std::vector<MapLine>& lines) {
         line.v2 = read_i16(record + 2);
         line.special = read_i16(record + 10);
         line.texture_index = texture_index_for_special(line.special, i);
+        line.texture_u_offset = texture_u_offset_for_special(line.special);
+        (void)texture_slot_count;
         lines[static_cast<std::size_t>(i)] = line;
     }
     return true;
@@ -125,6 +126,74 @@ bool load_things(const WadLumpData& lump, std::vector<MapThing>& things) {
     return true;
 }
 
+bool load_patch_names(const WadLumpData& lump, std::vector<std::string>& names) {
+    if (lump.size < 4) {
+        return false;
+    }
+    const int count = read_i32(lump.data);
+    if (count < 0 || 4 + static_cast<std::size_t>(count) * 8u > lump.size) {
+        return false;
+    }
+    names.clear();
+    names.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        const char* raw =
+            reinterpret_cast<const char*>(lump.data + 4 + static_cast<std::size_t>(i) * 8u);
+        char name_buf[9] = {};
+        std::memcpy(name_buf, raw, 8);
+        name_buf[8] = '\0';
+        std::string name(name_buf);
+        const std::size_t zero = name.find('\0');
+        if (zero != std::string::npos) {
+            name.resize(zero);
+        }
+        while (!name.empty() && name.back() == ' ') {
+            name.pop_back();
+        }
+        names.push_back(name);
+    }
+    return true;
+}
+
+int parse_wall_texture_slot_count(const WadLumpData& lump) {
+    if (lump.size < 8) {
+        return 0;
+    }
+    const int slot_count = read_i32(lump.data + 4);
+    if (slot_count <= 0 || slot_count > 64) {
+        return 0;
+    }
+    return slot_count;
+}
+
+bool load_m_textur(const WadLumpData& lump, std::vector<MapTextureSlot>& slots, int& width_out) {
+    if (lump.size < 26) {
+        return false;
+    }
+    const int width = read_i16(lump.data + 16);
+    const int slot_count = read_i16(lump.data + 24);
+    if (width <= 0 || slot_count <= 0) {
+        return false;
+    }
+
+    const std::size_t expected_size = 26u + static_cast<std::size_t>(slot_count) * 10u;
+    if (expected_size > lump.size) {
+        return false;
+    }
+
+    slots.clear();
+    slots.resize(static_cast<std::size_t>(slot_count));
+    for (int i = 0; i < slot_count; ++i) {
+        const std::size_t base = 26u + static_cast<std::size_t>(i) * 10u;
+        MapTextureSlot slot;
+        slot.x_offset = read_i16(lump.data + base);
+        slot.patch_index = read_i16(lump.data + base + 4);
+        slots[static_cast<std::size_t>(i)] = slot;
+    }
+    width_out = width;
+    return true;
+}
+
 }  // namespace
 
 bool Map::load_from_wad(const Wad& wad, Map& map) {
@@ -139,7 +208,17 @@ bool Map::load_from_wad(const Wad& wad, Map& map) {
         std::fprintf(stderr, "Failed to parse M_POINTS\n");
         return false;
     }
-    if (!load_lines(wad.lump_data(*lines_lump), map.lines_)) {
+    const auto textur_lump = wad.find_lump("M_TEXTUR");
+    if (textur_lump) {
+        map.wall_texture_slot_count_ =
+            parse_wall_texture_slot_count(wad.lump_data(*textur_lump));
+        if (!load_m_textur(wad.lump_data(*textur_lump), map.texture_slots_, map.texture_width_)) {
+            map.texture_slots_.clear();
+            map.texture_width_ = 0;
+        }
+    }
+
+    if (!load_lines(wad.lump_data(*lines_lump), map.lines_, map.wall_texture_slot_count_)) {
         std::fprintf(stderr, "Failed to parse M_LINES\n");
         return false;
     }
@@ -147,6 +226,13 @@ bool Map::load_from_wad(const Wad& wad, Map& map) {
     const auto things_lump = wad.find_lump("M_THINGS");
     if (things_lump) {
         load_things(wad.lump_data(*things_lump), map.things_);
+    }
+    const auto pnames_lump = wad.find_lump("M_PNAMES");
+    if (pnames_lump) {
+        if (!load_patch_names(wad.lump_data(*pnames_lump), map.patch_names_)) {
+            std::fprintf(stderr, "Warning: failed to parse M_PNAMES, using built-in wall list\n");
+            map.patch_names_.clear();
+        }
     }
 
     int door_count = 0;
@@ -158,7 +244,55 @@ bool Map::load_from_wad(const Wad& wad, Map& map) {
 
     std::printf("Map: %d points, %d lines (%d doors), %d things\n", map.point_count(),
                 map.line_count(), door_count, static_cast<int>(map.things_.size()));
+    if (!map.patch_names_.empty()) {
+        std::printf("Map: loaded %d wall patches from M_PNAMES\n",
+                    static_cast<int>(map.patch_names_.size()));
+        if (map.wall_texture_slot_count_ > 0) {
+            std::printf("Map: M_TEXTUR width hint = %d\n", map.wall_texture_slot_count_);
+        }
+        if (!map.texture_slots_.empty() && map.texture_width_ > 0) {
+            std::printf("Map: M_TEXTUR decoded width=%d, slots=%d\n", map.texture_width_,
+                        static_cast<int>(map.texture_slots_.size()));
+        }
+        for (MapLine& line : map.lines_) {
+            line.texture_index =
+                ((line.texture_index % static_cast<int>(map.patch_names_.size())) +
+                 static_cast<int>(map.patch_names_.size())) %
+                static_cast<int>(map.patch_names_.size());
+        }
+        std::printf("Map: line texture mapping (index: special -> tex -> patch)\n");
+        for (int i = 0; i < static_cast<int>(map.lines_.size()); ++i) {
+            const MapLine& line = map.lines_[static_cast<std::size_t>(i)];
+            const std::string& patch =
+                map.patch_names_[static_cast<std::size_t>(line.texture_index)];
+            std::printf("  %02d: %4d -> %2d (+%2d) -> %s\n", i, static_cast<int>(line.special),
+                        line.texture_index, line.texture_u_offset, patch.c_str());
+        }
+    }
     return true;
+}
+
+const std::string& Map::patch_name_for_index(int index) const {
+    static const std::string kEmpty;
+    if (patch_names_.empty()) {
+        return kEmpty;
+    }
+    const int wrapped = ((index % static_cast<int>(patch_names_.size())) +
+                         static_cast<int>(patch_names_.size())) %
+                        static_cast<int>(patch_names_.size());
+    return patch_names_[static_cast<std::size_t>(wrapped)];
+}
+
+float Map::texture_u_bias_for_line(const MapLine& line) const {
+    if (texture_slots_.empty() || texture_width_ <= 0) {
+        return 0.0f;
+    }
+    const int slot_index =
+        ((line.texture_index % static_cast<int>(texture_slots_.size())) +
+         static_cast<int>(texture_slots_.size())) %
+        static_cast<int>(texture_slots_.size());
+    const MapTextureSlot& slot = texture_slots_[static_cast<std::size_t>(slot_index)];
+    return static_cast<float>(slot.x_offset) / static_cast<float>(texture_width_);
 }
 
 MapBounds Map::bounds() const {
