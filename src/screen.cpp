@@ -62,6 +62,82 @@ void Screen::draw_column(int x, int y0, int y1, std::uint8_t color) {
     }
 }
 
+void Screen::draw_wall_column_shaded(int x, int y_top, int y_bottom, const std::uint8_t* source,
+                                   int source_height, int light, const Palette& palette) {
+    if (source == nullptr || source_height <= 0) {
+        return;
+    }
+
+    const int top = std::max(0, y_top);
+    const int bottom = std::min(kHeight, y_bottom);
+    const int draw_height = y_bottom - y_top;
+    if (bottom <= top || draw_height <= 0) {
+        return;
+    }
+
+    const int clamped_light = std::max(0, std::min(31, light));
+    for (int screen_y = top; screen_y < bottom; ++screen_y) {
+        const int source_y = ((screen_y - y_top) * source_height) / draw_height;
+        const std::uint8_t pixel = source[source_y];
+        indices_[static_cast<std::size_t>(screen_y * kWidth + x)] =
+            palette.map_index(pixel, clamped_light);
+    }
+}
+
+void Screen::draw_patch_column_shaded(int x, int y_top, int y_bottom, const std::uint8_t* source,
+                                    int source_height, int light, const Palette& palette) {
+    if (source == nullptr || source_height <= 0) {
+        return;
+    }
+
+    const int top = std::max(0, y_top);
+    const int bottom = std::min(kHeight, y_bottom);
+    const int draw_height = y_bottom - y_top;
+    if (draw_height <= 0) {
+        return;
+    }
+
+    const int clamped_light = std::max(0, std::min(31, light));
+    for (int source_y = 0; source_y < source_height; ++source_y) {
+        const std::uint8_t pixel = source[source_y];
+        if (pixel == 0) {
+            continue;
+        }
+
+        const int screen_y = y_top + (source_y * draw_height) / source_height;
+        if (screen_y < top || screen_y >= bottom) {
+            continue;
+        }
+
+        indices_[static_cast<std::size_t>(screen_y * kWidth + x)] =
+            palette.map_index(pixel, clamped_light);
+    }
+}
+
+void Screen::draw_column_scaled_shaded(int x, int y0, int y1, const std::uint8_t* source,
+                                     int source_height, int light, const Palette& palette) {
+    if (source == nullptr || source_height <= 0) {
+        return;
+    }
+
+    const int top = std::max(0, y0);
+    const int bottom = std::min(kHeight, y1);
+    const int span = bottom - top;
+    if (span <= 0) {
+        return;
+    }
+
+    const int clamped_light = std::max(0, std::min(31, light));
+    for (int row = 0; row < span; ++row) {
+        const int source_y = (row * source_height) / span;
+        const std::uint8_t pixel = source[source_y];
+        if (pixel != 0) {
+            indices_[static_cast<std::size_t>((top + row) * kWidth + x)] =
+                palette.map_index(pixel, clamped_light);
+        }
+    }
+}
+
 void Screen::draw_column_scaled(int x, int y0, int y1, const std::uint8_t* source,
                                 int source_height, std::uint8_t color) {
     if (source == nullptr || source_height <= 0) {
@@ -139,9 +215,10 @@ void Screen::draw_palette_test(const Palette& palette) {
     }
 }
 
-void Screen::present(SDL_Renderer* renderer, const Palette& palette) {
+void Screen::present(SDL_Renderer* renderer, const Palette& palette, bool apply_colormap) {
     for (int i = 0; i < kWidth * kHeight; ++i) {
-        const std::uint8_t mapped = palette.map_index(indices_[static_cast<std::size_t>(i)]);
+        const std::uint8_t index = indices_[static_cast<std::size_t>(i)];
+        const std::uint8_t mapped = apply_colormap ? palette.map_index(index) : index;
         std::uint8_t r = 0;
         std::uint8_t g = 0;
         std::uint8_t b = 0;

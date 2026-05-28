@@ -14,6 +14,7 @@ struct MapLine {
     std::int16_t v1 = 0;
     std::int16_t v2 = 0;
     std::int16_t special = 0;
+    int texture_index = 0;
 
     bool is_door() const { return special == 376 || special == 448; }
 };

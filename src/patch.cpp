@@ -189,27 +189,31 @@ bool patch_info(const WadLumpData& lump, PatchInfo& info) {
     }
 
     const std::uint8_t* data = lump.data;
-    const std::int16_t width16 = read_i16(data);
-    const std::int16_t height16 = read_i16(data + 2);
-
-    if (width16 > 0 && width16 < 512 && height16 > 0 && height16 < 512 &&
-        read_i32(data + 8) >= 8) {
-        info.width = width16;
-        info.height = height16;
-        info.leftoffset = read_i16(data + 4);
-        info.topoffset = read_i16(data + 6);
-        info.compact = false;
-        return true;
-    }
 
     const int compact_width = compact_sprite_width(data, lump.size);
     const int compact_height = data[1];
-    if (compact_width > 0 && compact_height > 0) {
+    if (compact_width > 0 && compact_height > 0 && compact_height < 512) {
         info.width = compact_width;
         info.height = compact_height;
         info.leftoffset = static_cast<int>(read_u16(data + 4));
         info.topoffset = static_cast<int>(read_u16(data + 6));
         info.compact = true;
+        return true;
+    }
+
+    const std::int16_t width16 = read_i16(data);
+    const std::int16_t height16 = read_i16(data + 2);
+    const std::int32_t first_column_ofs = read_i32(data + 8);
+    const std::size_t directory_bytes = 8u + static_cast<std::size_t>(width16) * 4u;
+
+    if (width16 > 0 && width16 < 512 && height16 > 0 && height16 < 512 &&
+        directory_bytes <= lump.size && first_column_ofs >= static_cast<std::int32_t>(directory_bytes) &&
+        static_cast<std::size_t>(first_column_ofs) < lump.size) {
+        info.width = width16;
+        info.height = height16;
+        info.leftoffset = read_i16(data + 4);
+        info.topoffset = read_i16(data + 6);
+        info.compact = false;
         return true;
     }
 
@@ -263,6 +267,13 @@ bool patch_column_pixels(const WadLumpData& lump, int column, std::vector<std::u
                 if (pixel != 0) {
                     pixels[static_cast<std::size_t>(y)] = pixel;
                 }
+            }
+            ++source;
+        }
+
+        if (!info.compact && (length & 1)) {
+            if (static_cast<std::size_t>(source - data) >= lump.size) {
+                return false;
             }
             ++source;
         }

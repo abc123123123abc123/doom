@@ -39,7 +39,7 @@ public:
     void init_from_map(const Map& map);
     void set_view(View view);
     void run_tic(const GameInput& input, const Map& map);
-    void draw(Screen& screen, const Wad& wad, const Map& map) const;
+    void draw(Screen& screen, const Wad& wad, const Map& map, const Palette& palette) const;
 
     std::int16_t player_x() const { return player_x_; }
     std::int16_t player_y() const { return player_y_; }

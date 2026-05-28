@@ -22,10 +22,17 @@ public:
     void draw_column(int x, int y0, int y1, std::uint8_t color);
     void draw_column_scaled(int x, int y0, int y1, const std::uint8_t* source, int source_height,
                             std::uint8_t color);
+    void draw_column_scaled_shaded(int x, int y0, int y1, const std::uint8_t* source,
+                                   int source_height, int light, const Palette& palette);
+    void draw_patch_column_shaded(int x, int y_top, int y_bottom, const std::uint8_t* source,
+                                  int source_height, int light, const Palette& palette);
+    void draw_wall_column_shaded(int x, int y_top, int y_bottom, const std::uint8_t* source,
+                                 int source_height, int light, const Palette& palette);
+
     void draw_palette_test(const Palette& palette);
     void draw_line(int x0, int y0, int x1, int y1, std::uint8_t color);
 
-    void present(SDL_Renderer* renderer, const Palette& palette);
+    void present(SDL_Renderer* renderer, const Palette& palette, bool apply_colormap = true);
 
 private:
     SDL_Renderer* renderer_ = nullptr;

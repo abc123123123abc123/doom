@@ -185,7 +185,7 @@ int main(int argc, char* argv[]) {
 
     Game game;
     game.init_from_map(map);
-    game.draw(screen, *wad, map);
+    game.draw(screen, *wad, map, *game_palette);
     update_window_title(window, game);
 
     double tic_accumulator = 0.0;
@@ -217,11 +217,14 @@ int main(int argc, char* argv[]) {
         }
 
         if (game.needs_redraw) {
-            game.draw(screen, *wad, map);
+            game.draw(screen, *wad, map, *game_palette);
             game.needs_redraw = false;
         }
 
-        screen.present(renderer, palette_for_view(game.view, *title_palette, *game_palette));
+        const Palette& view_palette =
+            palette_for_view(game.view, *title_palette, *game_palette);
+        const bool apply_colormap = game.view != View::World;
+        screen.present(renderer, view_palette, apply_colormap);
     }
 
     screen.shutdown();

@@ -258,7 +258,7 @@ void Game::run_tic(const GameInput& input, const Map& map) {
     }
 }
 
-void Game::draw(Screen& screen, const Wad& wad, const Map& map) const {
+void Game::draw(Screen& screen, const Wad& wad, const Map& map, const Palette& palette) const {
     screen.clear(0);
 
     switch (view) {
@@ -281,8 +281,9 @@ void Game::draw(Screen& screen, const Wad& wad, const Map& map) const {
             break;
         }
         case View::World:
-            render3d_.render(screen, wad, map, lines_, static_cast<float>(player_x_),
-                             static_cast<float>(player_y_), player_angle_);
+            render3d_.render(screen, wad, map, lines_, things_, palette,
+                             static_cast<float>(player_x_), static_cast<float>(player_y_),
+                             player_angle_);
             break;
     }
 }

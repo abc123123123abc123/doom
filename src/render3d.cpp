@@ -3,8 +3,10 @@
 #include "patch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -12,9 +14,18 @@ namespace {
 
 constexpr int kHorizon = Screen::kHeight / 2;
 constexpr int kViewHeight = 41;
-constexpr float kFocalLength = 160.0f;
+constexpr float kWorldWallHeight = 96.0f;
+constexpr float kMinProjectedPerpDistance = 8.0f;
+constexpr float kCameraPlaneScale = 0.66f;
+constexpr float kFocalLength =
+    static_cast<float>(Screen::kWidth) / (2.0f * kCameraPlaneScale);
 constexpr float kMaxDistance = 1024.0f;
+constexpr float kFloorCastMax = 640.0f;
 constexpr float kPi = 3.14159265f;
+constexpr int kFlatSize = 64 * 64;
+constexpr int kMaxSpriteDrawSize = Screen::kHeight + 48;
+constexpr std::uint8_t kSkyColor = 22;
+constexpr std::uint8_t kFloorVoidColor = 25;
 
 const char* kWallTextures[] = {
     "WALLA6_1", "WALLA6_2", "WALLA6_3", "WALLA6_4", "WALLA6_5", "WALLA6_6", "WALLA6_7",
@@ -25,6 +36,172 @@ const char* kWallTextures[] = {
     "WALL6_1",
 };
 constexpr int kWallTextureCount = static_cast<int>(sizeof(kWallTextures) / sizeof(kWallTextures[0]));
+constexpr const char* kFallbackWallTexture = "WALLA6_1";
+constexpr const char* kBoundaryWallTexture = "WALLBB_3";
+
+struct PatchColumns {
+    PatchInfo info;
+    std::vector<std::uint8_t> lump;
+    std::vector<std::vector<std::uint8_t>> columns;
+};
+
+bool load_flat(const Wad& wad, const char* name, std::array<std::uint8_t, kFlatSize>& out) {
+    const auto lump_index = wad.find_lump(name);
+    if (!lump_index) {
+        return false;
+    }
+    const WadLumpData lump = wad.lump_data(*lump_index);
+    if (lump.size < static_cast<std::size_t>(kFlatSize)) {
+        return false;
+    }
+    std::memcpy(out.data(), lump.data, kFlatSize);
+    return true;
+}
+
+std::uint8_t sample_flat(const std::array<std::uint8_t, kFlatSize>& flat, float world_x,
+                         float world_y) {
+    const int tx = static_cast<int>(world_x) & 63;
+    const int ty = static_cast<int>(world_y) & 63;
+    return flat[static_cast<std::size_t>(ty * 64 + tx)];
+}
+
+void put_shaded(Screen& screen, int x, int y, std::uint8_t color, int light,
+                const Palette& palette) {
+    screen.put_pixel(x, y, palette.map_index(color, light));
+}
+
+PatchColumns* ensure_patch_columns(const Wad& wad,
+                                   std::unordered_map<std::string, PatchColumns>& cache,
+                                   const char* lump_name) {
+    const std::string key(lump_name);
+    const auto found = cache.find(key);
+    if (found != cache.end()) {
+        return &found->second;
+    }
+
+    const auto lump_index = wad.find_lump(lump_name);
+    if (!lump_index) {
+        if (std::strcmp(lump_name, kFallbackWallTexture) != 0) {
+            return ensure_patch_columns(wad, cache, kFallbackWallTexture);
+        }
+        return nullptr;
+    }
+
+    const WadLumpData lump_data = wad.lump_data(*lump_index);
+    PatchInfo info;
+    if (!patch_info(lump_data, info)) {
+        if (std::strcmp(lump_name, kFallbackWallTexture) != 0) {
+            return ensure_patch_columns(wad, cache, kFallbackWallTexture);
+        }
+        return nullptr;
+    }
+
+    PatchColumns entry;
+    entry.info = info;
+    entry.lump.assign(lump_data.data, lump_data.data + lump_data.size);
+    entry.columns.resize(static_cast<std::size_t>(info.width));
+
+    WadLumpData stored_lump{entry.lump.data(), entry.lump.size()};
+    for (int col = 0; col < info.width; ++col) {
+        if (!patch_column_pixels(stored_lump, col, entry.columns[static_cast<std::size_t>(col)])) {
+            if (std::strcmp(lump_name, kFallbackWallTexture) != 0) {
+                return ensure_patch_columns(wad, cache, kFallbackWallTexture);
+            }
+            return nullptr;
+        }
+    }
+
+    const auto inserted = cache.emplace(key, std::move(entry));
+    return &inserted.first->second;
+}
+
+const char* sprite_lump_for_thing(std::int16_t type) {
+    switch (type) {
+        case 0:
+            return "WNUMBER0";
+        case 1:
+            return "WNUMBER1";
+        case 3:
+            return "WNUMBER3";
+        default:
+            return "TROOA1";
+    }
+}
+
+struct SpriteDraw {
+    float depth = 0.0f;
+    float screen_x = 0.0f;
+    const char* lump_name = nullptr;
+};
+
+void draw_sprite(Screen& screen, const Wad& wad, std::unordered_map<std::string, PatchColumns>& cache,
+                 const Palette& palette, const char* lump_name, float screen_x, float depth,
+                 const std::array<float, Screen::kWidth>& z_buffer) {
+    PatchColumns* patch = ensure_patch_columns(wad, cache, lump_name);
+    if (patch == nullptr || patch->info.width <= 0 || patch->info.height <= 0) {
+        return;
+    }
+
+    const float safe_depth = std::max(8.0f, depth);
+    const float scale = kFocalLength / safe_depth;
+
+    int draw_height = static_cast<int>(patch->info.height * scale);
+    int draw_width = static_cast<int>(patch->info.width * scale);
+    draw_height = std::clamp(draw_height, 1, kMaxSpriteDrawSize);
+    draw_width = std::clamp(draw_width, 1, kMaxSpriteDrawSize);
+
+    const int anchor_y = kHorizon;
+    const int y_top = anchor_y - static_cast<int>(patch->info.topoffset * scale);
+    const int y_bottom = y_top + draw_height;
+    const int start_x =
+        static_cast<int>(screen_x) - static_cast<int>(patch->info.leftoffset * scale);
+    const int light = std::min(31, static_cast<int>(safe_depth / 32.0f));
+
+    for (int column = 0; column < draw_width; ++column) {
+        const int screen_column = start_x + column;
+        if (screen_column < 0 || screen_column >= Screen::kWidth) {
+            continue;
+        }
+        if (safe_depth >= z_buffer[static_cast<std::size_t>(screen_column)]) {
+            continue;
+        }
+
+        const int tex_column = (column * patch->info.width) / std::max(1, draw_width);
+        const std::vector<std::uint8_t>& pixels =
+            patch->columns[static_cast<std::size_t>(std::min(tex_column, patch->info.width - 1))];
+        screen.draw_patch_column_shaded(screen_column, y_top, y_bottom, pixels.data(),
+                                        patch->info.height, light, palette);
+    }
+}
+
+bool trace_segment(float origin_x, float origin_y, float dir_x, float dir_y, float x1, float y1,
+                   float x2, float y2, float& closest, float& closest_offset, float& closest_u) {
+    const float seg_x = x2 - x1;
+    const float seg_y = y2 - y1;
+    const float det = dir_x * seg_y - dir_y * seg_x;
+    if (std::fabs(det) < 0.0001f) {
+        return false;
+    }
+
+    const float rx = x1 - origin_x;
+    const float ry = y1 - origin_y;
+    const float t = (rx * seg_y - ry * seg_x) / det;
+    const float u = (rx * dir_y - ry * dir_x) / det;
+    if (t <= 0.5f || u < 0.0f || u > 1.0f) {
+        return false;
+    }
+
+    if (t < closest) {
+        closest = t;
+        const float seg_len = std::sqrt(seg_x * seg_x + seg_y * seg_y);
+        const float hit_x = origin_x + dir_x * t;
+        const float hit_y = origin_y + dir_y * t;
+        closest_offset = ((hit_x - x1) * seg_x + (hit_y - y1) * seg_y) / seg_len;
+        closest_u = u;
+        return true;
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -33,10 +210,13 @@ bool Render3D::trace_ray(const Map& map, const std::vector<MapLineState>& lines,
     hit.distance = 0.0f;
     hit.line_index = -1;
     hit.wall_offset = 0.0f;
+    hit.wall_u = 0.0f;
+    hit.is_boundary = false;
 
     float closest = kMaxDistance;
     int closest_line = -1;
     float closest_offset = 0.0f;
+    float closest_u = 0.0f;
 
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
         const MapLineState& state = lines[static_cast<std::size_t>(i)];
@@ -53,139 +233,232 @@ bool Render3D::trace_ray(const Map& map, const std::vector<MapLineState>& lines,
         const MapPoint& a = map.points()[static_cast<std::size_t>(line.v1)];
         const MapPoint& b = map.points()[static_cast<std::size_t>(line.v2)];
 
-        const float x1 = static_cast<float>(a.x);
-        const float y1 = static_cast<float>(a.y);
-        const float x2 = static_cast<float>(b.x);
-        const float y2 = static_cast<float>(b.y);
-
-        const float seg_x = x2 - x1;
-        const float seg_y = y2 - y1;
-        const float det = dir_x * seg_y - dir_y * seg_x;
-        if (std::fabs(det) < 0.0001f) {
-            continue;
-        }
-
-        const float rx = x1 - origin_x;
-        const float ry = y1 - origin_y;
-        const float t = (rx * seg_y - ry * seg_x) / det;
-        const float u = (rx * dir_y - ry * dir_x) / det;
-        if (t <= 0.5f || u < 0.0f || u > 1.0f) {
-            continue;
-        }
-
-        if (t < closest) {
-            closest = t;
+        if (trace_segment(origin_x, origin_y, dir_x, dir_y, static_cast<float>(a.x),
+                          static_cast<float>(a.y), static_cast<float>(b.x),
+                          static_cast<float>(b.y), closest, closest_offset, closest_u)) {
             closest_line = i;
-            closest_offset = u * std::sqrt(seg_x * seg_x + seg_y * seg_y);
         }
     }
 
-    if (closest_line < 0) {
+    const MapBounds bounds = map.bounds();
+    constexpr int kMargin = 64;
+    const float min_x = static_cast<float>(bounds.min_x - kMargin);
+    const float max_x = static_cast<float>(bounds.max_x + kMargin);
+    const float min_y = static_cast<float>(bounds.min_y - kMargin);
+    const float max_y = static_cast<float>(bounds.max_y + kMargin);
+
+    float boundary_distance = closest;
+    float boundary_offset = closest_offset;
+    float boundary_u = closest_u;
+    const float boundary_before = boundary_distance;
+
+    trace_segment(origin_x, origin_y, dir_x, dir_y, min_x, min_y, min_x, max_y, boundary_distance,
+                  boundary_offset, boundary_u);
+    trace_segment(origin_x, origin_y, dir_x, dir_y, max_x, min_y, max_x, max_y, boundary_distance,
+                  boundary_offset, boundary_u);
+    trace_segment(origin_x, origin_y, dir_x, dir_y, min_x, min_y, max_x, min_y, boundary_distance,
+                  boundary_offset, boundary_u);
+    trace_segment(origin_x, origin_y, dir_x, dir_y, min_x, max_y, max_x, max_y, boundary_distance,
+                  boundary_offset, boundary_u);
+
+    const bool hit_boundary = boundary_distance < boundary_before;
+
+    if (closest_line < 0 && !hit_boundary) {
         return false;
+    }
+
+    if (hit_boundary && (closest_line < 0 || boundary_distance <= closest)) {
+        hit.distance = boundary_distance;
+        hit.line_index = -1;
+        hit.wall_offset = boundary_offset;
+        hit.wall_u = boundary_u;
+        hit.is_boundary = true;
+        return true;
     }
 
     hit.distance = closest;
     hit.line_index = closest_line;
     hit.wall_offset = closest_offset;
+    hit.wall_u = closest_u;
     return true;
 }
 
-std::uint8_t Render3D::shade_for_distance(float distance) const {
-    const int shade = static_cast<int>(distance / 32.0f);
-    return static_cast<std::uint8_t>(std::min(31, shade));
+int Render3D::shade_for_distance(float distance) const {
+    return std::min(31, static_cast<int>(distance / 32.0f));
 }
 
-const char* Render3D::texture_name_for_line(int line_index) const {
-    if (line_index < 0) {
+const char* Render3D::texture_name_for_line(const MapLine& line) const {
+    const int index = line.texture_index % kWallTextureCount;
+    if (index < 0) {
         return kWallTextures[0];
     }
-    return kWallTextures[line_index % kWallTextureCount];
+    return kWallTextures[index];
 }
 
 void Render3D::render(Screen& screen, const Wad& wad, const Map& map,
-                      const std::vector<MapLineState>& lines, float player_x, float player_y,
-                      float player_angle) const {
-    screen.clear(25);
+                      const std::vector<MapLineState>& lines,
+                      const std::vector<MapThingState>& things, const Palette& palette,
+                      float player_x, float player_y, float player_angle) const {
+    static std::unordered_map<std::string, PatchColumns> patch_cache;
+    static std::array<std::uint8_t, kFlatSize> floor_flat{};
+    static std::array<std::uint8_t, kFlatSize> ceiling_flat{};
+    static bool flats_loaded = false;
 
-    for (int x = 0; x < Screen::kWidth; ++x) {
-        for (int y = 0; y < kHorizon; ++y) {
-            screen.put_pixel(x, y, 22);
+    if (!flats_loaded) {
+        if (!load_flat(wad, "FLAT1", floor_flat)) {
+            floor_flat.fill(kFloorVoidColor);
         }
-        for (int y = kHorizon; y < Screen::kHeight; ++y) {
-            screen.put_pixel(x, y, 25);
+        if (!load_flat(wad, "FLAT5", ceiling_flat)) {
+            ceiling_flat.fill(kSkyColor);
         }
+        flats_loaded = true;
     }
 
-    static std::unordered_map<std::string, std::vector<std::uint8_t>> lump_cache;
-    static std::unordered_map<std::string, PatchInfo> info_cache;
-    static std::unordered_map<std::string, std::vector<std::vector<std::uint8_t>>> column_cache;
+    screen.clear(palette.map_index(kFloorVoidColor, 0));
 
-    const float plane_x0 = std::cos(player_angle + kPi / 2.0f);
-    const float plane_y0 = std::sin(player_angle + kPi / 2.0f);
+    const float plane_x = std::cos(player_angle + kPi / 2.0f) * kCameraPlaneScale;
+    const float plane_y = std::sin(player_angle + kPi / 2.0f) * kCameraPlaneScale;
+    const float dir_x_base = std::cos(player_angle);
+    const float dir_y_base = std::sin(player_angle);
+    const float right_x = std::cos(player_angle + kPi / 2.0f);
+    const float right_y = std::sin(player_angle + kPi / 2.0f);
+
+    std::array<float, Screen::kWidth> z_buffer{};
+    z_buffer.fill(kMaxDistance);
 
     for (int x = 0; x < Screen::kWidth; ++x) {
-        const float camera_x = (2.0f * static_cast<float>(x) / static_cast<float>(Screen::kWidth)) -
-                               1.0f;
-        const float ray_dir_x = std::cos(player_angle) + plane_x0 * camera_x * 0.66f;
-        const float ray_dir_y = std::sin(player_angle) + plane_y0 * camera_x * 0.66f;
-
-        const float inv_length =
-            1.0f / std::sqrt(ray_dir_x * ray_dir_x + ray_dir_y * ray_dir_y);
-        const float dir_x = ray_dir_x * inv_length;
-        const float dir_y = ray_dir_y * inv_length;
+        const float camera_x =
+            (2.0f * static_cast<float>(x) / static_cast<float>(Screen::kWidth)) - 1.0f;
+        const float ray_dir_x = dir_x_base + plane_x * camera_x;
+        const float ray_dir_y = dir_y_base + plane_y * camera_x;
+        const float ray_length =
+            std::sqrt(ray_dir_x * ray_dir_x + ray_dir_y * ray_dir_y);
+        const float dir_x = ray_dir_x / ray_length;
+        const float dir_y = ray_dir_y / ray_length;
+        const float ray_camera_dot =
+            (ray_dir_x * dir_x_base + ray_dir_y * dir_y_base) / ray_length;
 
         Hit hit;
-        if (!trace_ray(map, lines, player_x, player_y, dir_x, dir_y, hit)) {
+        int wall_top = 0;
+        int wall_bottom = Screen::kHeight;
+        float perp_distance = kMaxDistance;
+        float projected_perp_distance = kMaxDistance;
+        const bool has_wall = trace_ray(map, lines, player_x, player_y, dir_x, dir_y, hit);
+        if (has_wall) {
+            perp_distance = hit.distance * ray_camera_dot;
+            z_buffer[static_cast<std::size_t>(x)] = perp_distance;
+            projected_perp_distance = std::max(kMinProjectedPerpDistance, perp_distance);
+            const int wall_screen_height = static_cast<int>(
+                (kWorldWallHeight * kFocalLength) / projected_perp_distance);
+            wall_top = kHorizon - wall_screen_height / 2;
+            wall_bottom = kHorizon + wall_screen_height / 2;
+        }
+
+        const int clipped_wall_top = std::clamp(wall_top, 0, Screen::kHeight);
+        const int clipped_wall_bottom = std::clamp(wall_bottom, 0, Screen::kHeight);
+
+        const float depth_limit = has_wall ? perp_distance : kFloorCastMax;
+
+        for (int y = 0; y < clipped_wall_top; ++y) {
+            const int p = kHorizon - y;
+            if (p <= 0) {
+                continue;
+            }
+            const float perp_row_dist = (kViewHeight * kFocalLength) / static_cast<float>(p);
+            if (perp_row_dist > depth_limit) {
+                put_shaded(screen, x, y, kSkyColor, 31, palette);
+                continue;
+            }
+            const float world_x =
+                player_x + dir_x_base * perp_row_dist +
+                right_x * perp_row_dist * camera_x * kCameraPlaneScale;
+            const float world_y =
+                player_y + dir_y_base * perp_row_dist +
+                right_y * perp_row_dist * camera_x * kCameraPlaneScale;
+            const std::uint8_t color = sample_flat(ceiling_flat, world_x, world_y);
+            put_shaded(screen, x, y, color, shade_for_distance(perp_row_dist), palette);
+        }
+
+        for (int y = clipped_wall_bottom; y < Screen::kHeight; ++y) {
+            const int p = y - kHorizon;
+            if (p <= 0) {
+                continue;
+            }
+            const float perp_row_dist = (kViewHeight * kFocalLength) / static_cast<float>(p);
+            if (perp_row_dist > depth_limit) {
+                put_shaded(screen, x, y, kFloorVoidColor, 31, palette);
+                continue;
+            }
+            const float world_x =
+                player_x + dir_x_base * perp_row_dist +
+                right_x * perp_row_dist * camera_x * kCameraPlaneScale;
+            const float world_y =
+                player_y + dir_y_base * perp_row_dist +
+                right_y * perp_row_dist * camera_x * kCameraPlaneScale;
+            const std::uint8_t color = sample_flat(floor_flat, world_x, world_y);
+            put_shaded(screen, x, y, color, shade_for_distance(perp_row_dist), palette);
+        }
+
+        if (!has_wall) {
             continue;
         }
 
-        const int wall_height = static_cast<int>((kViewHeight * kFocalLength) / hit.distance);
-        const int top = std::max(0, kHorizon - wall_height / 2);
-        const int bottom = std::min(Screen::kHeight, kHorizon + wall_height / 2);
+        const char* texture_name =
+            hit.is_boundary ? kBoundaryWallTexture : texture_name_for_line(
+                                  lines[static_cast<std::size_t>(hit.line_index)].line);
+        PatchColumns* patch = ensure_patch_columns(wad, patch_cache, texture_name);
+        const int light = shade_for_distance(perp_distance);
 
-        for (int y = 0; y < top; ++y) {
-            screen.put_pixel(x, y, 22);
-        }
-        for (int y = bottom; y < Screen::kHeight; ++y) {
-            screen.put_pixel(x, y, 25);
-        }
-
-        const char* texture_name = texture_name_for_line(hit.line_index);
-        std::string key(texture_name);
-
-        if (lump_cache.find(key) == lump_cache.end()) {
-            const auto lump_index = wad.find_lump(texture_name);
-            if (!lump_index) {
-                screen.draw_column(x, top, bottom, static_cast<std::uint8_t>(176 + shade_for_distance(hit.distance)));
-                continue;
-            }
-
-            const WadLumpData lump_data = wad.lump_data(*lump_index);
-            PatchInfo info;
-            if (!patch_info(lump_data, info)) {
-                screen.draw_column(x, top, bottom, static_cast<std::uint8_t>(176 + shade_for_distance(hit.distance)));
-                continue;
-            }
-
-            std::vector<std::uint8_t> stored(lump_data.data, lump_data.data + lump_data.size);
-            lump_cache[key] = std::move(stored);
-            info_cache[key] = info;
-
-            WadLumpData stored_lump{lump_cache[key].data(), lump_cache[key].size()};
-            std::vector<std::vector<std::uint8_t>> columns(static_cast<std::size_t>(info.width));
-            for (int col = 0; col < info.width; ++col) {
-                patch_column_pixels(stored_lump, col, columns[static_cast<std::size_t>(col)]);
-            }
-            column_cache[key] = std::move(columns);
+        if (patch == nullptr) {
+            screen.draw_column(x, wall_top, wall_bottom, palette.map_index(176, light));
+            continue;
         }
 
-        const PatchInfo& info = info_cache[key];
-        const int tex_column =
-            static_cast<int>(hit.wall_offset) % std::max(1, info.width);
+        int tex_column = 0;
+        if (patch->info.width > 1) {
+            const float u = std::clamp(hit.wall_u, 0.0f, 0.9999f);
+            tex_column = static_cast<int>(u * static_cast<float>(patch->info.width));
+            tex_column = std::clamp(tex_column, 0, patch->info.width - 1);
+        }
         const std::vector<std::uint8_t>& column_pixels =
-            column_cache[key][static_cast<std::size_t>(tex_column)];
+            patch->columns[static_cast<std::size_t>(tex_column)];
+        screen.draw_wall_column_shaded(x, wall_top, wall_bottom, column_pixels.data(),
+                                       patch->info.height, light, palette);
+    }
 
-        screen.draw_column_scaled(x, top, bottom, column_pixels.data(), info.height,
-                                 static_cast<std::uint8_t>(176 + shade_for_distance(hit.distance)));
+    std::vector<SpriteDraw> sprites;
+    sprites.reserve(things.size());
+    const float transform_det = plane_x * dir_y_base - plane_y * dir_x_base;
+
+    for (const MapThingState& state : things) {
+        if (state.thing.type == 2) {
+            continue;
+        }
+
+        const float dx = static_cast<float>(state.thing.x) - player_x;
+        const float dy = static_cast<float>(state.thing.y) - player_y;
+        const float transform_y = (dir_y_base * dx - dir_x_base * dy) / transform_det;
+        if (transform_y <= 0.5f) {
+            continue;
+        }
+
+        const float transform_x = (-plane_y * dx + plane_x * dy) / transform_det;
+        const float inv_z = 1.0f / transform_y;
+        const float sprite_screen_x =
+            (static_cast<float>(Screen::kWidth) / 2.0f) * (1.0f + transform_x * inv_z);
+
+        SpriteDraw draw;
+        draw.depth = transform_y;
+        draw.screen_x = sprite_screen_x;
+        draw.lump_name = sprite_lump_for_thing(state.thing.type);
+        sprites.push_back(draw);
+    }
+
+    std::sort(sprites.begin(), sprites.end(),
+              [](const SpriteDraw& a, const SpriteDraw& b) { return a.depth > b.depth; });
+
+    for (const SpriteDraw& sprite : sprites) {
+        draw_sprite(screen, wad, patch_cache, palette, sprite.lump_name, sprite.screen_x,
+                    sprite.depth, z_buffer);
     }
 }

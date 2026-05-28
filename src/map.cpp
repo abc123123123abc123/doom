@@ -65,6 +65,22 @@ bool load_points(const WadLumpData& lump, std::vector<MapPoint>& points) {
     return true;
 }
 
+int texture_index_for_special(std::int16_t special, int line_index) {
+    if (special == 376 || special == 448) {
+        return 33;
+    }
+    if (special == 64) {
+        return 27;
+    }
+    if (special == 256) {
+        return 0;
+    }
+    if (special == 8) {
+        return 14;
+    }
+    return (std::abs(static_cast<int>(special)) / 16 + line_index) % 34;
+}
+
 bool load_lines(const WadLumpData& lump, std::vector<MapLine>& lines) {
     if (lump.size < 4) {
         return false;
@@ -82,6 +98,7 @@ bool load_lines(const WadLumpData& lump, std::vector<MapLine>& lines) {
         line.v1 = read_i16(record);
         line.v2 = read_i16(record + 2);
         line.special = read_i16(record + 10);
+        line.texture_index = texture_index_for_special(line.special, i);
         lines[static_cast<std::size_t>(i)] = line;
     }
     return true;
